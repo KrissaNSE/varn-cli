@@ -1,0 +1,20 @@
+{
+  "name": "varn-cli-source",
+  "private": true,
+  "description": "Source of @varnsecurity/cli, mirrored from Värn's main repository. Build: npm run build:cli",
+  "license": "MIT",
+  "scripts": {
+    "build:cli": "tsx packages/cli/scripts/build.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
+    "js-yaml": "4.3.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5",
+    "zod": "4.6.7"
+  }
+}

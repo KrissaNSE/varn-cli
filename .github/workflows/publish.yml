@@ -1,0 +1,58 @@
+# Publishes @varnsecurity/cli to npm with provenance when a tag cli-v<version>
+# is pushed, and only if that version is the one in packages/cli/package.json.
+# Needs the secret NPM_TOKEN in the environment "npm" (a granular token for the
+# @varnsecurity organisation, which has 2FA on).
+name: Publish CLI
+
+on:
+  push:
+    tags: ["cli-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-cli
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: read
+      # OIDC token for npm provenance.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Check the tag and the secret
+        env:
+          TAG: ${{ github.ref_name }}
+          HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+        run: |
+          version="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "$TAG" != "cli-v$version" ]; then
+            echo "::error::tag $TAG does not match packages/cli/package.json version $version"
+            exit 1
+          fi
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::the NPM_TOKEN secret is not set"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:cli
+      - run: node packages/cli/dist/varn.mjs --version
+      - name: Publish
+        working-directory: packages/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

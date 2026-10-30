@@ -1,0 +1,30 @@
+{
+  "name": "@varnsecurity/cli",
+  "version": "0.1.0",
+  "description": "Värn command-line tool: resolve varn:// secret references from your Värn vault on the machine that needs them.",
+  "license": "MIT",
+  "homepage": "https://www.varnsecurity.se/docs/hemligheter-i-kod-och-ci",
+  "type": "module",
+  "bin": {
+    "varn": "dist/varn.mjs"
+  },
+  "files": [
+    "dist/varn.mjs",
+    "dist/THIRD-PARTY-LICENSES.txt",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "varn",
+    "secrets",
+    "vault",
+    "cli",
+    "ci"
+  ]
+}

@@ -1,0 +1,104 @@
+# Värn secrets for GitHub Actions: a thin wrapper around the `varn` CLI
+# (@varnsecurity/cli). See packages/cli/README.md, "GitHub Actions".
+#
+# Two modes (use one or both):
+#   run:    runs a bash command with `varn run`. Environment variables of the
+#           step (or job) whose value is a varn:// reference are resolved for
+#           that command only, and the command's output is masked.
+#   export: resolves NAME=varn://… lines once and exports them to the later
+#           steps of the job as environment variables, registered with
+#           ::add-mask:: so GitHub hides them in the log.
+#
+# Inputs reach the shell only through environment variables, never through
+# ${{ }} inside a script, so an input cannot inject shell code.
+name: Värn secrets
+description: Resolve varn:// secret references from a Värn vault on the runner, for one command or for the rest of the job.
+author: Värn
+branding:
+  icon: lock
+  color: gray-dark
+
+inputs:
+  token:
+    description: The machine account's token. Store it as an encrypted secret, for example secrets.VARN_TOKEN.
+    required: true
+  version:
+    description: The exact @varnsecurity/cli version to run, for example 0.1.0. Ranges and tags such as latest are refused.
+    required: false
+    default: "0.1.0"
+  run:
+    description: A bash command to run with `varn run`. References in the step's or job's environment are resolved for it.
+    required: false
+    default: ""
+  env-file:
+    description: An env file with NAME=varn://… lines for the `run` command (path relative to the working directory).
+    required: false
+    default: ""
+  masking:
+    description: Mask secret values in the output of the `run` command ("true" or "false").
+    required: false
+    default: "true"
+  export:
+    description: Lines NAME=varn://… to resolve and export as masked environment variables to the later steps of the job.
+    required: false
+    default: ""
+  api-url:
+    description: Värn's address, if not https://www.varnsecurity.se.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs
+      shell: bash
+      env:
+        VARN_VERSION: ${{ inputs.version }}
+        INPUT_RUN: ${{ inputs.run }}
+        INPUT_EXPORT: ${{ inputs.export }}
+        INPUT_MASKING: ${{ inputs.masking }}
+      run: |
+        if ! [[ "$VARN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          echo "::error title=Värn secrets::version must be an exact @varnsecurity/cli version such as 0.1.0"
+          exit 1
+        fi
+        if [ -z "$INPUT_RUN" ] && [ -z "$INPUT_EXPORT" ]; then
+          echo "::error title=Värn secrets::set run, export or both"
+          exit 1
+        fi
+        if [ "$INPUT_MASKING" != "true" ] && [ "$INPUT_MASKING" != "false" ]; then
+          echo "::error title=Värn secrets::masking must be true or false"
+          exit 1
+        fi
+        node -e 'if (+process.versions.node.split(".")[0] < 20) { console.log("::error title=Värn secrets::@varnsecurity/cli needs Node.js 20 or newer; add actions/setup-node before this step"); process.exit(1); }'
+
+    - name: Export secrets
+      if: inputs.export != ''
+      shell: bash
+      env:
+        VARN_TOKEN: ${{ inputs.token }}
+        VARN_API_URL: ${{ inputs.api-url }}
+        VARN_VERSION: ${{ inputs.version }}
+        INPUT_EXPORT: ${{ inputs.export }}
+      run: |
+        envfile="$(mktemp)"
+        trap 'rm -f "$envfile"' EXIT
+        printf '%s\n' "$INPUT_EXPORT" > "$envfile"
+        # --no-masking: export.mjs prints ::add-mask::<value>, which must reach the runner unchanged.
+        npx --yes "@varnsecurity/cli@$VARN_VERSION" run --no-masking --env-file "$envfile" -- node "$GITHUB_ACTION_PATH/export.mjs" "$envfile"
+
+    - name: Run command
+      if: inputs.run != ''
+      shell: bash
+      env:
+        VARN_TOKEN: ${{ inputs.token }}
+        VARN_API_URL: ${{ inputs.api-url }}
+        VARN_VERSION: ${{ inputs.version }}
+        INPUT_RUN: ${{ inputs.run }}
+        INPUT_ENV_FILE: ${{ inputs.env-file }}
+        INPUT_MASKING: ${{ inputs.masking }}
+      run: |
+        args=(run)
+        if [ "$INPUT_MASKING" = "false" ]; then args+=(--no-masking); fi
+        if [ -n "$INPUT_ENV_FILE" ]; then args+=(--env-file "$INPUT_ENV_FILE"); fi
+        npx --yes "@varnsecurity/cli@$VARN_VERSION" "${args[@]}" -- bash -eo pipefail -c "$INPUT_RUN"
