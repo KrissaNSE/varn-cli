@@ -1,7 +1,9 @@
 # Publishes @varnsecurity/cli to npm with provenance when a tag cli-v<version>
 # is pushed, and only if that version is the one in packages/cli/package.json.
-# Needs the secret NPM_TOKEN in the environment "npm" (a granular token for the
-# @varnsecurity organisation, which has 2FA on).
+# Uses npm Trusted Publishing: npm trusts this workflow (repository
+# KrissaNSE/varn-cli, workflow publish.yml, environment npm) through GitHub's
+# OIDC token, so there is no npm token to leak. The package is set to refuse
+# token publishing. Needs npm 11.5.1 or later.
 name: Publish CLI
 
 on:
@@ -22,7 +24,7 @@ jobs:
     environment: npm
     permissions:
       contents: read
-      # OIDC token for npm provenance.
+      # OIDC token for npm trusted publishing and provenance.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -32,18 +34,13 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - name: Check the tag and the secret
+      - name: Check the tag
         env:
           TAG: ${{ github.ref_name }}
-          HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
         run: |
           version="$(node -p "require('./packages/cli/package.json').version")"
           if [ "$TAG" != "cli-v$version" ]; then
             echo "::error::tag $TAG does not match packages/cli/package.json version $version"
-            exit 1
-          fi
-          if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::error::the NPM_TOKEN secret is not set"
             exit 1
           fi
       - run: npm ci
@@ -51,8 +48,8 @@ jobs:
       - run: npm test
       - run: npm run build:cli
       - run: node packages/cli/dist/varn.mjs --version
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships npm 10.
+      - run: npm install --global npm@11
       - name: Publish
         working-directory: packages/cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public

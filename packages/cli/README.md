@@ -223,6 +223,6 @@ The tests build real vault fixtures with the shared crypto (organisation, member
 The source lives in Värn's private repository. `.github/workflows/sync-cli-mirror.yml` there copies `packages/cli` and the vault modules it bundles to the public repository [KrissaNSE/varn-cli](https://github.com/KrissaNSE/varn-cli) on every push to `main` (`packages/cli/mirror/assemble.mjs` decides what goes public). Releases are published from the public repository, because npm provenance and a GitHub Action customers can use both need one.
 
 1. Bump `version` in `packages/cli/package.json` and the action's default `version`, merge to `main` in the private repository and wait for the mirror sync.
-2. In KrissaNSE/varn-cli: `git tag cli-v<version> && git push origin cli-v<version>`. Its `publish.yml` runs only for that tag, checks that it matches `packages/cli/package.json`, runs the tests, builds and runs `npm publish --provenance --access public` with the `NPM_TOKEN` secret of its environment `npm` (a granular token for the `@varnsecurity` organisation, which requires 2FA).
+2. In KrissaNSE/varn-cli: `git tag cli-v<version> && git push origin cli-v<version>`. Its `publish.yml` runs only for that tag, checks that it matches `packages/cli/package.json`, runs the tests, builds and runs `npm publish --provenance --access public` through npm Trusted Publishing: npm trusts that workflow in its environment `npm` (which needs a maintainer's approval) via GitHub's OIDC token, and the package refuses publishing with tokens, so there is no npm token anywhere.
 
 Licence: MIT.
