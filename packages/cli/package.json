@@ -4,6 +4,15 @@
   "description": "Värn command-line tool: resolve varn:// secret references from your Värn vault on the machine that needs them.",
   "license": "MIT",
   "homepage": "https://www.varnsecurity.se/docs/hemligheter-i-kod-och-ci",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KrissaNSE/varn-cli.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "email": "security@varnsecurity.se",
+    "url": "https://github.com/KrissaNSE/varn-cli/issues"
+  },
   "type": "module",
   "bin": {
     "varn": "dist/varn.mjs"
