@@ -83,6 +83,8 @@ export interface FetchCollectionsOptions {
   ids?: string[];
   /** Signs each request (token v2); undefined sends the bearer value alone (token v1). */
   signer?: RequestSigner;
+  /** Clock for the signature timestamp; defaults to the system clock. */
+  now?: () => Date;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -100,7 +102,7 @@ async function request(opts: FetchCollectionsOptions, ids: string[] | undefined)
   const doFetch = opts.fetch ?? globalThis.fetch;
   const headers: Record<string, string> = { authorization: `Bearer ${opts.bearer}`, accept: "application/json", "user-agent": `varn-cli/${VERSION}` };
   // Signed per request: each page of ids has its own query and timestamp.
-  if (opts.signer) headers[MACHINE_SIGNATURE_HEADER] = opts.signer.header("GET", API_PATH, ids ?? null);
+  if (opts.signer) headers[MACHINE_SIGNATURE_HEADER] = opts.signer.header("GET", API_PATH, ids ?? null, opts.now ? Math.floor(opts.now().getTime() / 1000) : undefined);
   let response: Response;
   try {
     response = await doFetch(url, {

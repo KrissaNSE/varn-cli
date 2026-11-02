@@ -21,7 +21,10 @@ const SEC1_SUFFIX = Buffer.from("a00a06082a8648ce3d030107", "hex");
 /** A signer for a v2 token; null for a v1 token, which has no signing scalar. */
 export function createRequestSigner(token: MachineToken, verifier: string): RequestSigner | null {
   if (!token.signingSecret) return null;
-  const key = createPrivateKey({ key: Buffer.concat([SEC1_PREFIX, token.signingSecret, SEC1_SUFFIX]), format: "der", type: "sec1" });
+  // Keep the DER copy of the scalar only as long as createPrivateKey needs it.
+  const der = Buffer.concat([SEC1_PREFIX, token.signingSecret, SEC1_SUFFIX]);
+  const key = createPrivateKey({ key: der, format: "der", type: "sec1" });
+  der.fill(0);
   return {
     header(method, path, ids, now = Math.floor(Date.now() / 1000)) {
       const signed = signedString({ method, path, ids, timestamp: now, verifier });

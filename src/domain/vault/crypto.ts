@@ -1224,7 +1224,8 @@ export async function wrapCollectionKeyForMachine(opts: {
  * a collection key this browser holds (`from`), then wraps `to` and attests
  * under `to`. A machine registered without the key (a stolen admin session, or
  * a public key the server swapped in) fails with `integrity` and gets nothing.
- *   - Rotation: `from` = the collection's current key, `to` = its new version.
+ *   - Rotation: `from` = any collection key the machine and this browser both hold and whose attestation is
+ *     verifiable (not necessarily the rotated collection's own), `to` = its new version.
  *   - More collections: `from` = any collection the machine and this browser both hold.
  */
 export async function rewrapForMachine(opts: {
@@ -1258,7 +1259,7 @@ export async function createMachineAccount(opts: {
   orgId: string;
   collections: CollectionKeyRef[];
   sender: UnlockedIdentity;
-  /** 2 adds a signing key to the token (request signatures); 1 until the UI switches over. */
+  /** 2 (the default) adds a signing key to the token for request signatures; 1 makes a legacy unsigned token. */
   tokenVersion?: 1 | 2;
 }): Promise<NewMachineAccount & { signingPublicKey: string | null }> {
   if (opts.collections.length === 0 || new Set(opts.collections.map((c) => c.collectionId)).size !== opts.collections.length) {
@@ -1272,7 +1273,7 @@ export async function createMachineAccount(opts: {
   if (secret.length !== MACHINE_SECRET_BYTES) throw new VaultCryptoError("invalid_input");
   let signing: { signingSecret: Bytes; signingPublicKey: string } | null = null;
   try {
-    if ((opts.tokenVersion ?? 1) === 2) signing = await generateMachineSigningKey();
+    if ((opts.tokenVersion ?? 2) === 2) signing = await generateMachineSigningKey();
     const grants: MachineWrap[] = [];
     for (const collection of opts.collections) {
       grants.push(await wrapCollectionKeyForMachine({ ctx, collection, sender: opts.sender, machinePublicKey: publicKey }));

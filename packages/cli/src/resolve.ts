@@ -219,9 +219,11 @@ export async function resolveReferences(refs: SecretReference[], opts: ResolveOp
   const bearer = await machineBearer(token);
   // The verifier is derived from the bearer exactly as Värn derives the stored one.
   const verifier = await machineVerifierFromBearer(bearer);
+  // A v2 token must never silently fall back to unsigned requests.
+  if (!verifier && token.signingSecret) throw new CliError(EXIT.internal, "Could not derive the request verifier from the token.");
   const signer = verifier ? createRequestSigner(token, verifier) : null;
   if (signer) opts.onSigned?.();
-  const response = await fetchCollections({ origin: opts.origin, bearer, ids, signer: signer ?? undefined, fetch: opts.fetch });
+  const response = await fetchCollections({ origin: opts.origin, bearer, ids, signer: signer ?? undefined, now: opts.now, fetch: opts.fetch });
 
   if (response.organization.id !== token.orgId || response.machine.id !== token.machineId) {
     throw new CliError(EXIT.decrypt, "The API answered for another organisation or machine account than the token's. Check VARN_API_URL.");
