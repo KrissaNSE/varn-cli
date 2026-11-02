@@ -961,6 +961,10 @@ export async function rewrapForRecovery(opts: {
 //   token            = "varn_mt_" + Crockford base32( version(1) ‖ org_id(16) ‖ machine_id(16) ‖ d(32) ‖ checksum(3) )
 //                      checksum = SHA-256("varn-vault/v1/machine-token|" ‖ version ‖ org_id ‖ machine_id ‖ d)[0..3]
 //                      → 68 bytes = 109 characters after the prefix (the last character carries one zero pad bit)
+//   token v2         = same prefix and checksum, with the request-signing scalar s added:
+//                      version(1) ‖ org_id(16) ‖ machine_id(16) ‖ d(32) ‖ s(32) ‖ checksum(3)
+//                      → 100 bytes = 160 characters after the prefix (800 bits, no pad bit); the
+//                      version byte and the length must agree, so a v1 body cannot claim v2
 //   auth_secret      = HKDF-SHA-256(d, salt = empty, info = "varn-vault/v1/machine-auth|org_id|machine_id") (32 bytes)
 //   bearer           = base64url(auth_secret) without padding (43 characters), sent as `Authorization: Bearer …`
 //   verifier         = base64(SHA-256(auth_secret)); the only thing Värn stores to recognise the machine
@@ -977,14 +981,27 @@ export async function rewrapForRecovery(opts: {
 // ---------------------------------------------------------------------------
 
 export const MACHINE_TOKEN_PREFIX = "varn_mt_";
+export const MACHINE_TOKEN_VERSIONS = [1, 2] as const;
+export type MachineTokenVersion = (typeof MACHINE_TOKEN_VERSIONS)[number];
+/** The v1 version byte; kept for callers that predate v2. */
 export const MACHINE_TOKEN_VERSION = 1;
 const MACHINE_SECRET_BYTES = 32;
 const MACHINE_CHECKSUM_BYTES = 3;
-const MACHINE_PAYLOAD_BYTES = 1 + 16 + 16 + MACHINE_SECRET_BYTES;
-const MACHINE_TOKEN_BYTES = MACHINE_PAYLOAD_BYTES + MACHINE_CHECKSUM_BYTES;
-/** Characters after the prefix: ceil(68 * 8 / 5) = 109. */
-export const MACHINE_TOKEN_BODY_LENGTH = Math.ceil((MACHINE_TOKEN_BYTES * 8) / 5);
+const MACHINE_PAYLOAD_BYTES_V1 = 1 + 16 + 16 + MACHINE_SECRET_BYTES;
+const MACHINE_PAYLOAD_BYTES_V2 = MACHINE_PAYLOAD_BYTES_V1 + MACHINE_SECRET_BYTES;
+const MACHINE_TOKEN_BYTES_V1 = MACHINE_PAYLOAD_BYTES_V1 + MACHINE_CHECKSUM_BYTES;
+const MACHINE_TOKEN_BYTES_V2 = MACHINE_PAYLOAD_BYTES_V2 + MACHINE_CHECKSUM_BYTES;
+/** Characters after the prefix: ceil(68 * 8 / 5) = 109 (v1) and ceil(100 * 8 / 5) = 160 (v2). */
+export const MACHINE_TOKEN_BODY_LENGTH_V1 = Math.ceil((MACHINE_TOKEN_BYTES_V1 * 8) / 5);
+export const MACHINE_TOKEN_BODY_LENGTH_V2 = Math.ceil((MACHINE_TOKEN_BYTES_V2 * 8) / 5);
+/** The v1 values, kept under their original names. */
+export const MACHINE_TOKEN_BODY_LENGTH = MACHINE_TOKEN_BODY_LENGTH_V1;
 export const MACHINE_TOKEN_LENGTH = MACHINE_TOKEN_PREFIX.length + MACHINE_TOKEN_BODY_LENGTH;
+/** Total token length (prefix included) per version: 117 and 168. */
+export const MACHINE_TOKEN_LENGTHS = {
+  1: MACHINE_TOKEN_PREFIX.length + MACHINE_TOKEN_BODY_LENGTH_V1,
+  2: MACHINE_TOKEN_PREFIX.length + MACHINE_TOKEN_BODY_LENGTH_V2,
+} as const;
 
 export interface MachineContext {
   orgId: string;
@@ -992,10 +1009,14 @@ export interface MachineContext {
   machineId: string;
 }
 
-/** A parsed token. `secret` is the machine's private scalar d: keep it in memory only. */
+/**
+ * A parsed token. `secret` is the machine's private scalar d and
+ * `signingSecret` the request-signing scalar s (null for v1): keep both in memory only.
+ */
 export interface MachineToken extends MachineContext {
-  version: typeof MACHINE_TOKEN_VERSION;
+  version: MachineTokenVersion;
   secret: Bytes;
+  signingSecret: Bytes | null;
 }
 
 function uuidToBytes(value: string): Bytes {
@@ -1014,10 +1035,12 @@ async function machineChecksum(payload: Bytes): Promise<Bytes> {
   return (await sha256(concat(utf8("varn-vault/v1/machine-token|"), payload))).slice(0, MACHINE_CHECKSUM_BYTES);
 }
 
-/** Encodes a machine token. Only the creating browser calls this, once. */
-export async function encodeMachineToken(ctx: MachineContext, secret: Uint8Array): Promise<string> {
+/** Encodes a machine token (v2 when `signingSecret` is given). Only the creating browser calls this, once. */
+export async function encodeMachineToken(ctx: MachineContext, secret: Uint8Array, signingSecret?: Uint8Array): Promise<string> {
   if (secret.length !== MACHINE_SECRET_BYTES) throw new VaultCryptoError("invalid_input");
-  const payload = concat(Uint8Array.of(MACHINE_TOKEN_VERSION), uuidToBytes(ctx.orgId), uuidToBytes(ctx.machineId), secret);
+  if (signingSecret !== undefined && signingSecret.length !== MACHINE_SECRET_BYTES) throw new VaultCryptoError("invalid_input");
+  const version: MachineTokenVersion = signingSecret === undefined ? 1 : 2;
+  const payload = concat(Uint8Array.of(version), uuidToBytes(ctx.orgId), uuidToBytes(ctx.machineId), secret, ...(signingSecret ? [signingSecret] : []));
   try {
     return MACHINE_TOKEN_PREFIX + base32Encode(concat(payload, await machineChecksum(payload)));
   } finally {
@@ -1036,22 +1059,28 @@ export async function parseMachineToken(token: string): Promise<MachineToken> {
   const trimmed = token.trim();
   if (!trimmed.startsWith(MACHINE_TOKEN_PREFIX)) throw new VaultCryptoError("machine_token_invalid");
   const body = normalizeRecoveryCode(trimmed.slice(MACHINE_TOKEN_PREFIX.length));
-  if (body.length !== MACHINE_TOKEN_BODY_LENGTH) throw new VaultCryptoError("machine_token_invalid");
+  // The length picks the layout; the version byte inside must agree with it.
+  const version: MachineTokenVersion | null =
+    body.length === MACHINE_TOKEN_BODY_LENGTH_V1 ? 1 : body.length === MACHINE_TOKEN_BODY_LENGTH_V2 ? 2 : null;
+  if (version === null) throw new VaultCryptoError("machine_token_invalid");
+  const payloadBytes = version === 1 ? MACHINE_PAYLOAD_BYTES_V1 : MACHINE_PAYLOAD_BYTES_V2;
   const bytes = base32Decode(body);
-  if (!bytes || bytes.length !== MACHINE_TOKEN_BYTES) throw new VaultCryptoError("machine_token_invalid");
+  if (!bytes || bytes.length !== payloadBytes + MACHINE_CHECKSUM_BYTES) throw new VaultCryptoError("machine_token_invalid");
   try {
-    // 109 characters carry 545 bits for 544: the spare bit must be zero, so every token has one spelling.
-    if ((CROCKFORD.indexOf(body[body.length - 1]!) & 1) !== 0) throw new VaultCryptoError("machine_token_invalid");
-    const payload = bytes.slice(0, MACHINE_PAYLOAD_BYTES);
+    // v1: 109 characters carry 545 bits for 544, so the spare bit must be zero and every token has one spelling.
+    // v2: 160 characters carry exactly 800 bits, nothing to check.
+    if (version === 1 && (CROCKFORD.indexOf(body[body.length - 1]!) & 1) !== 0) throw new VaultCryptoError("machine_token_invalid");
+    const payload = bytes.slice(0, payloadBytes);
     try {
       const checksum = await machineChecksum(payload);
-      if (checksum.some((b, i) => b !== bytes[MACHINE_PAYLOAD_BYTES + i])) throw new VaultCryptoError("machine_token_invalid");
-      if (payload[0] !== MACHINE_TOKEN_VERSION) throw new VaultCryptoError("machine_token_invalid");
+      if (checksum.some((b, i) => b !== bytes[payloadBytes + i])) throw new VaultCryptoError("machine_token_invalid");
+      if (payload[0] !== version) throw new VaultCryptoError("machine_token_invalid");
       return {
-        version: MACHINE_TOKEN_VERSION,
+        version,
         orgId: bytesToUuid(payload.subarray(1, 17)),
         machineId: bytesToUuid(payload.subarray(17, 33)),
-        secret: payload.slice(33),
+        secret: payload.slice(33, 65),
+        signingSecret: version === 2 ? payload.slice(65, 97) : null,
       };
     } finally {
       payload.fill(0);
@@ -1229,7 +1258,9 @@ export async function createMachineAccount(opts: {
   orgId: string;
   collections: CollectionKeyRef[];
   sender: UnlockedIdentity;
-}): Promise<NewMachineAccount> {
+  /** 2 adds a signing key to the token (request signatures); 1 until the UI switches over. */
+  tokenVersion?: 1 | 2;
+}): Promise<NewMachineAccount & { signingPublicKey: string | null }> {
   if (opts.collections.length === 0 || new Set(opts.collections.map((c) => c.collectionId)).size !== opts.collections.length) {
     throw new VaultCryptoError("invalid_input");
   }
@@ -1239,7 +1270,9 @@ export async function createMachineAccount(opts: {
   const jwk = await subtle().exportKey("jwk", pair.privateKey);
   const secret = fromBase64Url(jwk.d ?? "");
   if (secret.length !== MACHINE_SECRET_BYTES) throw new VaultCryptoError("invalid_input");
+  let signing: { signingSecret: Bytes; signingPublicKey: string } | null = null;
   try {
+    if ((opts.tokenVersion ?? 1) === 2) signing = await generateMachineSigningKey();
     const grants: MachineWrap[] = [];
     for (const collection of opts.collections) {
       grants.push(await wrapCollectionKeyForMachine({ ctx, collection, sender: opts.sender, machinePublicKey: publicKey }));
@@ -1247,10 +1280,47 @@ export async function createMachineAccount(opts: {
     const authSecret = await machineAuthSecret(ctx, secret);
     const verifier = await machineVerifier(authSecret);
     authSecret.fill(0);
-    return { token: await encodeMachineToken(ctx, secret), machineId: ctx.machineId, publicKey, verifier, grants };
+    const token = await encodeMachineToken(ctx, secret, signing?.signingSecret);
+    return { token, machineId: ctx.machineId, publicKey, verifier, grants, signingPublicKey: signing?.signingPublicKey ?? null };
   } finally {
     secret.fill(0);
+    signing?.signingSecret.fill(0);
   }
+}
+
+/** A fresh ECDSA P-256 key for signing read-API requests: the 32-byte scalar for the token and the raw public point (base64) for the server. */
+export async function generateMachineSigningKey(): Promise<{ signingSecret: Bytes; signingPublicKey: string }> {
+  const pair = (await subtle().generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])) as CryptoKeyPair;
+  const signingPublicKey = toBase64(await subtle().exportKey("raw", pair.publicKey));
+  const jwk = await subtle().exportKey("jwk", pair.privateKey);
+  const signingSecret = fromBase64Url(jwk.d ?? "");
+  if (signingSecret.length !== 32) throw new VaultCryptoError("invalid_input");
+  return { signingSecret, signingPublicKey };
+}
+
+/**
+ * Server side: whether `signature` (base64url of 64 raw bytes r||s) is a valid
+ * ECDSA P-256 / SHA-256 signature over `signed` by `signingPublicKey` (base64
+ * raw point). Malformed keys or signatures give false, never an exception.
+ */
+export async function verifyRequestSignature(opts: { signingPublicKey: string; signed: string; signature: string }): Promise<boolean> {
+  try {
+    if (!/^[A-Za-z0-9_-]{86}$/.test(opts.signature)) return false;
+    const sig = fromBase64Url(opts.signature);
+    if (sig.length !== 64) return false;
+    const raw = fromBase64(opts.signingPublicKey);
+    if (raw.length !== 65 || raw[0] !== 0x04) return false;
+    const key = await subtle().importKey("raw", raw, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    return await subtle().verify({ name: "ECDSA", hash: "SHA-256" }, key, sig, new TextEncoder().encode(opts.signed));
+  } catch {
+    return false;
+  }
+}
+
+/** `v1,t=<digits>,sig=<86 base64url characters>` or null. */
+export function parseSignatureHeader(value: string | null): { t: number; sig: string } | null {
+  const m = typeof value === "string" ? /^v1,t=(\d{1,15}),sig=([A-Za-z0-9_-]{86})$/.exec(value) : null;
+  return m ? { t: Number(m[1]), sig: m[2]! } : null;
 }
 
 export interface UnlockedMachine extends MachineContext {

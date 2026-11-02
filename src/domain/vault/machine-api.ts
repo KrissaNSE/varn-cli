@@ -10,12 +10,44 @@
  * the `varn` CLI can bundle it next to ./crypto; the route handler validates
  * what it sends with the same schema. Fields are only ever added within v1;
  * anything that changes or removes one is v2 (a new path).
+ *
+ * Request signature (token v2 machines, design §4.3):
+ *
+ *   X-Varn-Signature: v1,t=<unix seconds>,sig=<base64url, no padding, of the 64 raw bytes r||s>
+ *
+ * The machine signs, with ECDSA P-256 / SHA-256 and the signing scalar from its
+ * token, the UTF-8 string
+ *
+ *   "varn-vault/v1/req|" METHOD "|" PATH "|" CANONICAL_QUERY "|" T "|" VERIFIER
+ *
+ * where METHOD is upper case, PATH is the request path (no host, no query),
+ * CANONICAL_QUERY is "" without `ids`, otherwise "ids=" plus the ids
+ * lower-cased, de-duplicated, sorted and joined by "," (so the order they were
+ * sent in does not matter), T is the same number as in the header, and VERIFIER
+ * is the base64 verifier of the bearer the request carries. The server checks
+ * the signature against the machine's signing public key (base64 raw point, as
+ * public_key) and that T is within MACHINE_SIGNATURE_WINDOW_S seconds of now.
  */
 import { z } from "zod";
 
 export const MACHINE_API_VERSION = 1;
 /** At most this many collection ids per request. */
 export const MACHINE_API_MAX_IDS = 100;
+export const MACHINE_SIGNATURE_HEADER = "x-varn-signature";
+/** How far a signed timestamp may be from the server's clock, either way. */
+export const MACHINE_SIGNATURE_WINDOW_S = 300;
+
+/** `ids=a,b,c` with the ids lower-cased, de-duplicated and sorted; "" when there are none (or no `ids`). */
+export function canonicalQuery(ids: string[] | null): string {
+  if (!ids) return "";
+  const unique = [...new Set(ids.map((id) => id.toLowerCase()))].sort();
+  return unique.length === 0 ? "" : `ids=${unique.join(",")}`;
+}
+
+/** The exact string a machine signs and the route verifies; see the header comment. */
+export function signedString(opts: { method: string; path: string; ids: string[] | null; timestamp: number; verifier: string }): string {
+  return ["varn-vault/v1/req", opts.method.toUpperCase(), opts.path, canonicalQuery(opts.ids), String(opts.timestamp), opts.verifier].join("|");
+}
 
 const b64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
 const publicKey = z.string().regex(/^[A-Za-z0-9+/]{87}=$/);

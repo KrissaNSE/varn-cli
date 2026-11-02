@@ -17,6 +17,7 @@ import {
   decryptCollectionName,
   decryptItem,
   machineBearer,
+  machineVerifierFromBearer,
   openMachineGrant,
   unlockMachine,
   type MachineToken,
@@ -25,6 +26,7 @@ import {
 import type { MachineCollection, MachineItem, MachineReadResponse } from "../../../src/domain/vault/machine-api";
 import type { VaultItemPayload } from "../../../src/domain/vault/model";
 import { fetchCollections } from "./api";
+import { createRequestSigner } from "./sign";
 import { CliError, EXIT } from "./errors";
 import { nameKey, type SecretReference, type Selector } from "./reference";
 
@@ -45,6 +47,8 @@ export interface ResolveOptions {
   /** Days before expiry at which to warn that the machine account expires soon. */
   expiryWarningDays?: number;
   now?: () => Date;
+  /** Called when requests are signed (token v2), for --verbose. */
+  onSigned?: () => void;
 }
 
 function describe(selector: Selector): string {
@@ -212,7 +216,12 @@ export async function resolveReferences(refs: SecretReference[], opts: ResolveOp
 
   const byId = refs.every((r) => r.collection.kind === "id");
   const ids = byId ? refs.map((r) => (r.collection as { id: string }).id) : undefined;
-  const response = await fetchCollections({ origin: opts.origin, bearer: await machineBearer(token), ids, fetch: opts.fetch });
+  const bearer = await machineBearer(token);
+  // The verifier is derived from the bearer exactly as Värn derives the stored one.
+  const verifier = await machineVerifierFromBearer(bearer);
+  const signer = verifier ? createRequestSigner(token, verifier) : null;
+  if (signer) opts.onSigned?.();
+  const response = await fetchCollections({ origin: opts.origin, bearer, ids, signer: signer ?? undefined, fetch: opts.fetch });
 
   if (response.organization.id !== token.orgId || response.machine.id !== token.machineId) {
     throw new CliError(EXIT.decrypt, "The API answered for another organisation or machine account than the token's. Check VARN_API_URL.");

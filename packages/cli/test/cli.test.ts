@@ -457,3 +457,63 @@ describe("usage", () => {
     expect((await runCli(["read", "--verbose=yes", "x"])).exitCode).toBe(EXIT.usage);
   });
 });
+
+describe("request signing (token v2)", () => {
+  it("signs every request with a v2 token and the API accepts it", async () => {
+    // The fake API verifies the signature against the fixture's public key and answers 401 otherwise.
+    expect(fx.tokenVersion).toBe(2);
+    const r = await runCli(["read", ref("Produktion", "Stripe")], { env });
+    expect(r.exitCode).toBe(EXIT.ok);
+    expect(api.requests).toHaveLength(1);
+    expect(api.requests[0]!.signature).toMatch(/^v1,t=\d+,sig=[A-Za-z0-9_-]{86}$/);
+    expectNoSecretsIn(r.stderr);
+    // A request by collection ids is signed over its own query.
+    const byId = await runCli(["read", `varn://exempel/id:${fx.ids.prod}/Stripe/password`], { env });
+    expect(byId.exitCode).toBe(EXIT.ok);
+    expect(api.requests[1]!.signature).toMatch(/^v1,t=\d+,sig=/);
+  });
+
+  it("is refused by the API when the signature is missing", async () => {
+    // Guards the fixture itself: a v2 account without a signature gets 401.
+    const res = await fetch(`${api.url}/api/vault/v1/collections`, { headers: { authorization: `Bearer ${fx.bearer}` } });
+    expect(res.status).toBe(401);
+  });
+
+  it("sends no signature header with a v1 token", async () => {
+    const v1 = await buildFixture({ tokenVersion: 1 });
+    const v1Api = await startApi(v1);
+    try {
+      const r = await runCli(["read", ref("Produktion", "Stripe")], { env: { ...baseEnv(), VARN_TOKEN: v1.token, VARN_API_URL: v1Api.url } });
+      expect(r.exitCode).toBe(EXIT.ok);
+      expect(r.stdout).toBe(VALUES.stripe);
+      expect(v1Api.requests).toHaveLength(1);
+      expect(v1Api.requests[0]!.signature).toBeUndefined();
+    } finally {
+      await v1Api.close();
+    }
+  });
+
+  it("names both valid token lengths and varn 0.2.0 when the token is not valid", async () => {
+    // 0.1.0 is published and cannot change; this is what 0.2.0 tells a user whose token is damaged.
+    const r = await runCli(["read", ref("Produktion", "Stripe")], { env: { ...env, VARN_TOKEN: fx.token.slice(0, 117) } });
+    expect(r.exitCode).toBe(EXIT.token);
+    expect(r.stderr).toContain("117 or 168 characters");
+    expect(r.stderr).toContain("168-character tokens need varn 0.2.0 or later");
+    expect(api.requests).toHaveLength(0);
+  });
+
+  it("prints 'request signed' with --verbose for v2 only", async () => {
+    const r = await runCli(["--verbose", "read", ref("Produktion", "Stripe")], { env });
+    expect(r.stderr).toContain("varn: request signed");
+    const quiet = await runCli(["read", ref("Produktion", "Stripe")], { env });
+    expect(quiet.stderr).not.toContain("request signed");
+    const v1 = await buildFixture({ tokenVersion: 1 });
+    const v1Api = await startApi(v1);
+    try {
+      const old = await runCli(["--verbose", "read", ref("Produktion", "Stripe")], { env: { ...baseEnv(), VARN_TOKEN: v1.token, VARN_API_URL: v1Api.url } });
+      expect(old.stderr).not.toContain("request signed");
+    } finally {
+      await v1Api.close();
+    }
+  });
+});

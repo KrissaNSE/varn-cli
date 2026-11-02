@@ -23,9 +23,9 @@ inputs:
     description: The machine account's token. Store it as an encrypted secret, for example secrets.VARN_TOKEN.
     required: true
   version:
-    description: The exact @varnsecurity/cli version to run, for example 0.1.0. Ranges and tags such as latest are refused.
+    description: The exact @varnsecurity/cli version to run, for example 0.2.0. Ranges and tags such as latest are refused.
     required: false
-    default: "0.1.0"
+    default: "0.2.0"
   run:
     description: A bash command to run with `varn run`. References in the step's or job's environment are resolved for it.
     required: false
@@ -59,7 +59,7 @@ runs:
         INPUT_MASKING: ${{ inputs.masking }}
       run: |
         if ! [[ "$VARN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-          echo "::error title=Värn secrets::version must be an exact @varnsecurity/cli version such as 0.1.0"
+          echo "::error title=Värn secrets::version must be an exact @varnsecurity/cli version such as 0.2.0"
           exit 1
         fi
         if [ -z "$INPUT_RUN" ] && [ -z "$INPUT_EXPORT" ]; then

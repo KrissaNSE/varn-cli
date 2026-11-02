@@ -7,8 +7,10 @@ import {
   MACHINE_API_MAX_IDS,
   machineReadResponseSchema,
   type MachineApiError,
+  MACHINE_SIGNATURE_HEADER,
   type MachineReadResponse,
 } from "../../../src/domain/vault/machine-api";
+import type { RequestSigner } from "./sign";
 import { CliError, EXIT, type ExitCode } from "./errors";
 import { VERSION } from "./version";
 
@@ -79,6 +81,8 @@ export interface FetchCollectionsOptions {
   bearer: string;
   /** Collection ids to fetch; undefined fetches every collection the machine holds. */
   ids?: string[];
+  /** Signs each request (token v2); undefined sends the bearer value alone (token v1). */
+  signer?: RequestSigner;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -94,11 +98,14 @@ async function request(opts: FetchCollectionsOptions, ids: string[] | undefined)
   const url = new URL(API_PATH, opts.origin);
   if (ids) url.searchParams.set("ids", ids.join(","));
   const doFetch = opts.fetch ?? globalThis.fetch;
+  const headers: Record<string, string> = { authorization: `Bearer ${opts.bearer}`, accept: "application/json", "user-agent": `varn-cli/${VERSION}` };
+  // Signed per request: each page of ids has its own query and timestamp.
+  if (opts.signer) headers[MACHINE_SIGNATURE_HEADER] = opts.signer.header("GET", API_PATH, ids ?? null);
   let response: Response;
   try {
     response = await doFetch(url, {
       method: "GET",
-      headers: { authorization: `Bearer ${opts.bearer}`, accept: "application/json", "user-agent": `varn-cli/${VERSION}` },
+      headers,
       // Never follow a redirect with the bearer value: report it instead.
       redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),

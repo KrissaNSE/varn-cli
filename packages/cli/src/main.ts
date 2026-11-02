@@ -159,8 +159,16 @@ class Context {
     const tokenFile = one(this.parsed, "--token-file");
     const token = await loadToken({ env: this.io.env, tokenFile: tokenFile === undefined ? undefined : this.path(tokenFile), warn: this.warn, platform: this.io.platform });
     try {
-      const resolved = await resolveReferences(refs, { token, origin, fetch: this.io.fetch, warn: this.warn, now: this.io.now });
-      if (flag(this.parsed, "--verbose")) {
+      const verbose = flag(this.parsed, "--verbose");
+      const resolved = await resolveReferences(refs, {
+        token,
+        origin,
+        fetch: this.io.fetch,
+        warn: this.warn,
+        now: this.io.now,
+        onSigned: verbose ? () => this.io.stderr.write("varn: request signed\n") : undefined,
+      });
+      if (verbose) {
         for (const r of resolved) {
           this.io.stderr.write(`varn: ${r.reference.raw} → item ${r.itemId} version ${r.itemVersion}, updated ${r.updatedAt} (collection ${r.collectionId})\n`);
         }
@@ -168,6 +176,7 @@ class Context {
       return resolved;
     } finally {
       token.secret.fill(0);
+      token.signingSecret?.fill(0);
     }
   }
 }

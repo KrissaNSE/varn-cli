@@ -15,13 +15,16 @@ import {
   encryptItem,
   generateCollectionKey,
   machineBearer,
+  machineVerifierFromBearer,
+  parseSignatureHeader,
+  verifyRequestSignature,
   parseMachineToken,
   toBase64,
   wrapCollectionKeyForMachine,
   type MachineWrap,
   type UnlockedIdentity,
 } from "../../../src/domain/vault/crypto";
-import type { MachineCollection, MachineReadResponse } from "../../../src/domain/vault/machine-api";
+import { MACHINE_SIGNATURE_HEADER, MACHINE_SIGNATURE_WINDOW_S, signedString, type MachineCollection, type MachineReadResponse } from "../../../src/domain/vault/machine-api";
 import { emptyItem, type VaultItemPayload } from "../../../src/domain/vault/model";
 import { main, type CliIO } from "../src/main";
 import type { RunResult } from "../src/run";
@@ -50,6 +53,9 @@ export interface Fixture {
   slug: string;
   token: string;
   bearer: string;
+  tokenVersion: 1 | 2;
+  /** Base64 raw P-256 point the fake API verifies signatures against (null for v1). */
+  signingPublicKey: string | null;
   machineId: string;
   ids: {
     prod: string;
@@ -65,7 +71,7 @@ export interface Fixture {
   response: MachineReadResponse;
 }
 
-export async function buildFixture(opts: { expiresAt?: string } = {}): Promise<Fixture> {
+export async function buildFixture(opts: { expiresAt?: string; tokenVersion?: 1 | 2 } = {}): Promise<Fixture> {
   const orgId = randomUUID();
   const alice = await identity(orgId, randomUUID());
   const ids = {
@@ -78,8 +84,9 @@ export async function buildFixture(opts: { expiresAt?: string } = {}): Promise<F
     stripe: randomUUID(),
     oldItem: randomUUID(),
   };
+  const tokenVersion = opts.tokenVersion ?? 2;
   const prodKey = await generateCollectionKey();
-  const account = await createMachineAccount({ orgId, sender: alice, collections: [{ collectionId: ids.prod, keyVersion: 1, key: prodKey }] });
+  const account = await createMachineAccount({ orgId, tokenVersion, sender: alice, collections: [{ collectionId: ids.prod, keyVersion: 1, key: prodKey }] });
   const ctx = { orgId, machineId: account.machineId };
   const grantJson = (w: MachineWrap) => ({
     key_version: w.keyVersion,
@@ -153,7 +160,7 @@ export async function buildFixture(opts: { expiresAt?: string } = {}): Promise<F
     machine: { id: account.machineId, public_key: account.publicKey, expires_at: opts.expiresAt ?? new Date(Date.now() + 90 * 86_400_000).toISOString() },
     collections: [prod, test, dubbel1, dubbel2, broken],
   };
-  return { orgId, slug: "exempel", token: account.token, bearer: await machineBearer(await parseMachineToken(account.token)), machineId: account.machineId, ids, response };
+  return { orgId, slug: "exempel", token: account.token, bearer: await machineBearer(await parseMachineToken(account.token)), tokenVersion, signingPublicKey: account.signingPublicKey, machineId: account.machineId, ids, response };
 }
 
 export interface Reply {
@@ -164,11 +171,28 @@ export interface Reply {
 
 export interface ApiServer {
   url: string;
-  requests: { url: string; authorization: string | undefined; userAgent: string | undefined }[];
+  requests: { url: string; authorization: string | undefined; userAgent: string | undefined; signature: string | undefined }[];
   /** Overrides the next replies; reset() restores the fixture behaviour. */
-  reply: ((req: IncomingMessage) => Reply) | null;
+  reply: ((req: IncomingMessage) => Reply | Promise<Reply>) | null;
   reset(): void;
   close(): Promise<void>;
+}
+
+const header = (req: IncomingMessage, name: string): string | undefined => {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+};
+
+/** What the real route does for a v2 machine: the header must be well formed, fresh and signed over the request. */
+async function signatureOk(req: IncomingMessage, url: URL, fixture: Fixture): Promise<boolean> {
+  const parsed = parseSignatureHeader(header(req, MACHINE_SIGNATURE_HEADER) ?? null);
+  if (!parsed || !fixture.signingPublicKey) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - parsed.t) > MACHINE_SIGNATURE_WINDOW_S) return false;
+  const verifier = await machineVerifierFromBearer(fixture.bearer);
+  if (!verifier) return false;
+  const ids = url.searchParams.get("ids");
+  const signed = signedString({ method: req.method ?? "GET", path: url.pathname, ids: ids ? ids.split(",") : null, timestamp: parsed.t, verifier });
+  return verifyRequestSignature({ signingPublicKey: fixture.signingPublicKey, signed, signature: parsed.sig });
 }
 
 /** A local read API: answers like the real one for the fixture's bearer value. */
@@ -186,10 +210,11 @@ export async function startApi(fixture: Fixture): Promise<ApiServer> {
       server.close(() => resolve());
     }),
   };
-  const standard = (req: IncomingMessage): Reply => {
+  const standard = async (req: IncomingMessage): Promise<Reply> => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/api/vault/v1/collections") return { status: 404, body: "not found" };
     if (req.headers.authorization !== `Bearer ${fixture.bearer}`) return { status: 401, body: { api_version: 1, error: "unauthorized" } };
+    if (fixture.signingPublicKey && !(await signatureOk(req, url, fixture))) return { status: 401, body: { api_version: 1, error: "unauthorized" } };
     const idsParam = url.searchParams.get("ids");
     if (!idsParam) return { status: 200, body: fixture.response };
     const ids = idsParam.split(",");
@@ -198,11 +223,12 @@ export async function startApi(fixture: Fixture): Promise<ApiServer> {
     return { status: 200, body: { ...fixture.response, collections: fixture.response.collections.filter((c) => ids.includes(c.id)) } };
   };
   const server: Server = createServer((req, res) => {
-    api.requests.push({ url: req.url ?? "", authorization: req.headers.authorization, userAgent: req.headers["user-agent"] });
-    const r = (api.reply ?? standard)(req);
-    const text = typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {});
-    res.writeHead(r.status, { "content-type": typeof r.body === "string" ? "text/plain" : "application/json", ...r.headers });
-    res.end(text);
+    api.requests.push({ url: req.url ?? "", authorization: req.headers.authorization, userAgent: req.headers["user-agent"], signature: header(req, MACHINE_SIGNATURE_HEADER) });
+    void Promise.resolve((api.reply ?? standard)(req)).then((r) => {
+      const text = typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? {});
+      res.writeHead(r.status, { "content-type": typeof r.body === "string" ? "text/plain" : "application/json", ...r.headers });
+      res.end(text);
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   api.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

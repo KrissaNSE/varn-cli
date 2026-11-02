@@ -19,9 +19,9 @@ from your organisation's Värn secure vault, on the machine that needs them. It 
 Always pin an exact version.
 
 ```bash
-npx --yes @varnsecurity/cli@0.1.0 --version        # run without installing
-npm install --global @varnsecurity/cli@0.1.0       # or install
-npm install --save-dev --save-exact @varnsecurity/cli@0.1.0
+npx --yes @varnsecurity/cli@0.2.0 --version        # run without installing
+npm install --global @varnsecurity/cli@0.2.0       # or install
+npm install --save-dev --save-exact @varnsecurity/cli@0.2.0
 ```
 
 ### Verify the package (provenance)
@@ -33,10 +33,10 @@ Every release is built and published by GitHub Actions with [npm provenance](htt
 npm audit signatures
 
 # The provenance statement of one version (source commit and workflow):
-npm view @varnsecurity/cli@0.1.0 dist.attestations --json
+npm view @varnsecurity/cli@0.2.0 dist.attestations --json
 ```
 
-On npmjs.com the version page shows "Built and signed on GitHub Actions" with a link to the commit. The build is deterministic: checking out that commit and running `npm ci && npm run build:cli` gives a `packages/cli/dist/varn.mjs` with the same SHA-256 as the one in the tarball (`npm pack @varnsecurity/cli@0.1.0` and unpack it to compare).
+On npmjs.com the version page shows "Built and signed on GitHub Actions" with a link to the commit. The build is deterministic: checking out that commit and running `npm ci && npm run build:cli` gives a `packages/cli/dist/varn.mjs` with the same SHA-256 as the one in the tarball (`npm pack @varnsecurity/cli@0.2.0` and unpack it to compare).
 
 ## Token
 
@@ -48,6 +48,10 @@ A machine account is created by an administrator in Värn under **Secure vault �
 2. the environment variable `VARN_TOKEN`.
 
 The token contains the machine's private key. `varn` sends only a value derived from it (`Authorization: Bearer …`, which cannot decrypt anything), never prints the token, and removes `VARN_TOKEN` from the environment of the command it runs.
+
+From 0.2.0, `varn` also signs every request (an `X-Varn-Signature` header) with a signing key in the token, so the bearer value alone is not enough to read the vault.
+
+**Compatibility.** Machine accounts created from the day the signing release goes live (168-character tokens) need varn 0.2.0 or later. Older accounts (117-character tokens) work with either version.
 
 ## References
 
@@ -130,7 +134,7 @@ jobs:
         with:
           node-version: 22
       - name: Deploy
-        run: npx --yes @varnsecurity/cli@0.1.0 run -- ./deploy.sh
+        run: npx --yes @varnsecurity/cli@0.2.0 run -- ./deploy.sh
         env:
           VARN_TOKEN: ${{ secrets.VARN_TOKEN }}
           DATABASE_PASSWORD: varn://exempel/Produktion/Produktionsdatabas/password
@@ -146,7 +150,7 @@ The values exist only in that step, and everything `deploy.sh` prints is masked.
 | Input | Default | |
 |---|---|---|
 | `token` | (required) | The machine token, e.g. `${{ secrets.VARN_TOKEN }}`. |
-| `version` | `0.1.0` | Exact `@varnsecurity/cli` version; ranges and `latest` are refused. |
+| `version` | `0.2.0` | Exact `@varnsecurity/cli` version; ranges and `latest` are refused. |
 | `run` | | A bash command run with `varn run` (masked); references in the step's or job's `env` are resolved. |
 | `env-file` | | An env file for `run`. |
 | `masking` | `true` | `false` turns masking off for `run`. |
@@ -154,14 +158,14 @@ The values exist only in that step, and everything `deploy.sh` prints is masked.
 | `api-url` | | Värn's address if not the default. |
 
 ```yaml
-      - uses: KrissaNSE/varn-cli/packages/cli/action@cli-v0.1.0   # pin a tag or, better, a commit SHA
+      - uses: KrissaNSE/varn-cli/packages/cli/action@cli-v0.2.0   # pin a tag or, better, a commit SHA
         with:
           token: ${{ secrets.VARN_TOKEN }}
           run: ./deploy.sh
         env:
           DATABASE_PASSWORD: varn://exempel/Produktion/Produktionsdatabas/password
 
-      - uses: KrissaNSE/varn-cli/packages/cli/action@cli-v0.1.0
+      - uses: KrissaNSE/varn-cli/packages/cli/action@cli-v0.2.0
         with:
           token: ${{ secrets.VARN_TOKEN }}
           export: |

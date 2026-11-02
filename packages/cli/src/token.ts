@@ -65,7 +65,7 @@ export async function loadToken(opts: TokenSource): Promise<MachineToken> {
     // Deliberately no detail: the error must not echo any part of the token.
     throw new CliError(
       EXIT.token,
-      `The machine token in ${where} is not valid. It should start with varn_mt_ and be 117 characters long; copy it again from the file you downloaded when the machine account was created.`,
+      `The machine token in ${where} is not valid. It should start with varn_mt_ and be 117 or 168 characters long (168-character tokens need varn 0.2.0 or later); copy it again from the file you downloaded when the machine account was created.`,
     );
   }
 }
